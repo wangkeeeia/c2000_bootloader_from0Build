@@ -1,0 +1,13 @@
+"./dcsm.obj"
+"./f28e12x_flash_kernel_ex3_boot.obj"
+"./f28e12x_flash_kernel_ex3_erase.obj"
+"./f28e12x_flash_kernel_ex3_sci_boot.obj"
+"./f28e12x_flash_kernel_ex3_sci_flash_kernel.obj"
+"./f28e12x_flash_kernel_ex3_sci_get_function.obj"
+"./f28e12x_flash_kernel_ex3_verify.obj"
+"./flash_kernel_ex3_codestartbranch.obj"
+"./device/device.obj"
+"../28e12x_flash_kernel_ex3.cmd"
+"../FAPI_ROM_F28E12x_v5.00.00.lib"
+"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib/ccs/Debug/driverlib.lib"
+-llibc.a

@@ -1,0 +1,47 @@
+[
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/dcsm.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device/device.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_boot.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_erase.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_sci_boot.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_sci_flash_kernel.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_sci_get_function.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X -xc",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/f28e12x_flash_kernel_ex3_verify.c"
+   },
+   {
+      "directory" : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/CPU1_RAM",
+      "command"   : "clang++ -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel\" -I\"D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/device\" -I\"C:/ti/C2000Ware_26_01_00_00/driverlib/f28e12x/driverlib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/boot_rom/f28e12x/rev0/rom_sources/F28E12x_ROM/inc\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/lib\" -I\"C:/ti/C2000Ware_26_01_00_00/libraries/flash_api/f28e12x/include/FlashAPI\" -I\"C:/ti/ccs2020/ccs/tools/compiler/ti-cgt-c2000_22.6.3.LTS/include\" -DCPU1 -D_LAUNCHXL_F28E12X",
+      "file"      : "D:/001work/07Bootloader_build/flash_kernel_ex3_sci_flash_kernel/flash_kernel_ex3_codestartbranch.asm"
+   }
+]
