@@ -2,6 +2,15 @@
 //
 // FILE:   f28e12x_flash_kernel_ex3_sci_flash_kernel.c
 //
+// TITLE:  F28E12 Bootloader - SCI Handshake & Flash Kernel
+//
+// DESCRIPTION:
+//   Bootloader for F28E12 using SCIB (GPIO18/GPIO19).
+//   Based on CMS32M bootloader architecture.
+//   - Host sends 'B' every 20ms for handshake
+//   - MCU echoes 'B' back on successful handshake
+//   - 20ms timeout exits bootloader and jumps to application
+//
 //###########################################################################
 // $Copyright:
 // Copyright (C) 2026 Texas Instruments Incorporated - http://www.ti.com/
@@ -39,60 +48,99 @@
 //
 // Included Files
 //
-
 #include <string.h>
-#include "flash_programming_f28e12x.h" // Flash API example header file
+#include "flash_programming_f28e12x.h"
 #include "FlashTech_F28E1xx_C28x.h"
 #include "Types.h"
 #include "cpu1bootrom.h"
 #include "device.h"
 #include "flash.h"
 #include "gpio.h"
-#include "interrupt.h"
 #include "driverlib.h"
 #include "sci.h"
+#include "cputimer.h"
 
+//
+// Defines
+//
+#define COMMAND_NACK                0x01U
+#define COMMAND_HANDSHAKE           'B'
+
+#define TIMEOUT_MS                  20U
+#define SYSCLK_FREQ                 160000000U
+#define TIMEOUT_PERIOD              ((SYSCLK_FREQ / 1000U) * TIMEOUT_MS)
 
 //
 // Function Prototypes
 //
-void exampleError();
+void exampleError(Fapi_StatusType status);
 void Flash_initSectors(void);
+static void Hardware_Init(void);
+static void Timer_Init(void);
+static void Timer_Start(void);
+static void Timer_Stop(void);
+static bool Is_TimeOut(void);
+static uint8_t SCI_GetChar(void);
+static void SCI_PutChar(uint8_t ch);
+static void JumpToApp(void);
+
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
 
 //
-// Main - SCIB UART Test: GPIO18(TX) / GPIO19(RX)
+// Main - SCIB Bootloader
+//   GPIO18(TX) / GPIO19(RX)
+//   上位机每20ms发送一次 'B'，MCU收到后回显 'B' 进入bootloader模式
+//   超时后重新启动定时器，继续等待 'B'（调试阶段，后续改为跳转APP）
 //
 uint32_t main(void)
 {
+    uint8_t command;
+
+    Hardware_Init();
+    Timer_Init();
+
+    while(1)
+    {
+        Timer_Start();
+
+        command = SCI_GetChar();
+
+        switch(command)
+        {
+            case COMMAND_HANDSHAKE:
+            {
+                SCI_PutChar(COMMAND_HANDSHAKE);
+                Timer_Stop();
+
+                while(1)
+                {
+                }
+            }
+            case COMMAND_NACK:
+            default:
+            {
+                break;
+            }
+        }
+    }
+
+    return(0);
+}
+
 //
-// Step 1. Minimal init: Flash kernel already runs from RAM.
-//         ROM boot has configured PLL, disabled WDG, enabled all peripheral
-//         clocks. Device_init() is NOT called because it reconfigures PLL
-//         and accesses flash (memcpy ramfuncs) which crashes in RAM-resident
-//         flash kernel mode.
+// Hardware_Init - 初始化GPIO、SCI、CPUTimer
 //
+static void Hardware_Init(void)
+{
     Device_initGPIO();
 
-//
-// Step 2. Set LSPCLK divider to /4 so SCI baud calculation is correct.
-//         DEVICE_LSPCLK_FREQ = DEVICE_SYSCLK_FREQ / 4 = 40 MHz (at 160 MHz).
-//
     SysCtl_setLowSpeedClock(SYSCTL_LSPCLK_PRESCALE_4);
 
-//
-// Step 3. Disable interrupts
-//
     DINT;
-    Interrupt_initModule();
-    Interrupt_initVectorTable();
     IER = 0x0000;
     IFR = 0x0000;
 
-//
-// Step 4. Configure GPIO18 as SCIB_TX and GPIO19 as SCIB_RX
-//
     GPIO_setPinConfig(GPIO_18_SCIB_TX);
     GPIO_setDirectionMode(18, GPIO_DIR_MODE_OUT);
     GPIO_setPadConfig(18, GPIO_PIN_TYPE_STD);
@@ -103,47 +151,104 @@ uint32_t main(void)
     GPIO_setPadConfig(19, GPIO_PIN_TYPE_STD);
     GPIO_setQualificationMode(19, GPIO_QUAL_ASYNC);
 
-//
-// Step 5. Enable SCIB peripheral clock and release from system reset.
-//         ROM boot code only enables SCIA clock; SCIB must be enabled manually.
-//
     EALLOW;
     SysCtl_resetPeripheral(SYSCTL_PERIPH_RES_SCIB);
     HWREG(CPUSYS_BASE + SYSCTL_O_PERCLKCR + 2U) |= (1UL << 3U);
     EDIS;
     asm(" RPT #5 || NOP");
 
-//
-// Step 6. Initialize SCIB: 9600 baud, 8 data bits, 1 stop bit, no parity
-//
     SCI_resetChannels(SCIB_BASE);
     SCI_setConfig(SCIB_BASE, DEVICE_LSPCLK_FREQ, 9600,
                   SCI_CONFIG_WLEN_8 | SCI_CONFIG_STOP_ONE | SCI_CONFIG_PAR_NONE);
     SCI_enableModule(SCIB_BASE);
     SCI_performSoftwareReset(SCIB_BASE);
+}
 
 //
-// Step 7. Main loop: continuously send 't', respond 'r' when 'x' received
+// Timer_Init - 初始化 CPUTimer0 为 20ms 超时定时器
 //
+static void Timer_Init(void)
+{
+    CPUTimer_setPeriod(CPUTIMER0_BASE, TIMEOUT_PERIOD);
+    CPUTimer_setPreScaler(CPUTIMER0_BASE, 0);
+    CPUTimer_stopTimer(CPUTIMER0_BASE);
+}
+
+//
+// Timer_Start - 启动超时定时器
+//
+static void Timer_Start(void)
+{
+    CPUTimer_reloadTimerCounter(CPUTIMER0_BASE);
+    CPUTimer_startTimer(CPUTIMER0_BASE);
+}
+
+//
+// Timer_Stop - 停止超时定时器
+//
+static void Timer_Stop(void)
+{
+    CPUTimer_stopTimer(CPUTIMER0_BASE);
+}
+
+//
+// Is_TimeOut - 检查超时定时器是否溢出
+//
+static bool Is_TimeOut(void)
+{
+    return CPUTimer_getTimerOverflowStatus(CPUTIMER0_BASE);
+}
+
+//
+// SCI_GetChar - 带超时的串口接收（阻塞式，轮询）
+//   返回: 收到的字节，超时则返回 COMMAND_NACK
+//
+static uint8_t SCI_GetChar(void)
+{
     uint16_t rxData;
 
     while(1)
     {
-        SCI_writeCharBlockingNonFIFO(SCIB_BASE, 't');
-
-        DEVICE_DELAY_US(200000);
+        if(Is_TimeOut())
+        {
+            return COMMAND_NACK;
+        }
 
         if(SCI_isDataAvailableNonFIFO(SCIB_BASE))
         {
             rxData = SCI_readCharBlockingNonFIFO(SCIB_BASE);
-            if(rxData == 'x')
-            {
-                SCI_writeCharBlockingNonFIFO(SCIB_BASE, 'r');
-            }
+            return (uint8_t)rxData;
         }
     }
+}
 
-    return(0);
+//
+// SCI_PutChar - 发送一个字节
+//
+static void SCI_PutChar(uint8_t ch)
+{
+    SCI_writeCharBlockingNonFIFO(SCIB_BASE, ch);
+}
+
+//
+// JumpToApp - 跳转到应用程序入口
+//
+static void JumpToApp(void)
+{
+    uint32_t appEntry;
+
+    appEntry = *(uint32_t *)(FLASH_ENTRY_POINT + 2U);
+
+    SCI_PutChar(0x00);
+
+    SCI_resetChannels(SCIB_BASE);
+    Timer_Stop();
+
+    DINT;
+    IER = 0x0000;
+    IFR = 0x0000;
+
+    ((void (*)(void))appEntry)();
 }
 
 //
@@ -153,7 +258,7 @@ void Flash_initSectors(void)
 {
     EALLOW;
     Fapi_StatusType oReturnCheck;
-    oReturnCheck = Fapi_initializeAPI(FlashTech_CPU0_BASE_ADDRESS, 150); 
+    oReturnCheck = Fapi_initializeAPI(FlashTech_CPU0_BASE_ADDRESS, 150);
     if(oReturnCheck != Fapi_Status_Success)
     {
         exampleError(oReturnCheck);
@@ -172,11 +277,8 @@ void Flash_initSectors(void)
         #pragma CODE_SECTION(exampleError,"ramfuncs");
     #endif
 #endif
-void exampleError()
+void exampleError(Fapi_StatusType status)
 {
-    //
-    // Error code will be in the status parameter
-    //
     __asm("    ESTOP0");
 }
 
