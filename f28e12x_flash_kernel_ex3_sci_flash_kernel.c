@@ -79,6 +79,11 @@
 #define TIMEOUT_PERIOD              ((SYSCLK_FREQ / 1000U) * TIMEOUT_MS)
 
 //
+// Flash command address (volatile: Flash words are 16‑bit aligned)
+//
+static uint32_t g_flash_addr = 0xFFFFFFFFU;
+
+//
 // Function Prototypes
 //
 void exampleError(Fapi_StatusType status);
@@ -91,6 +96,7 @@ static bool Is_TimeOut(void);
 static uint8_t SCI_GetChar(void);
 static void SCI_PutChar(uint8_t ch);
 static void JumpToApp(void);
+static void Set_Address(void);
 
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
@@ -156,6 +162,7 @@ uint32_t main(void)
             case COMMAND_SET_ADDRESS:
             {
                 SCI_PutChar('d');
+                Set_Address();
                 break;
             }
             case COMMAND_CHANGE_BAUD:
@@ -300,6 +307,34 @@ static void JumpToApp(void)
     // IFR = 0x0000;
 
     // ((void (*)(void))appEntry)();
+}
+
+//
+// Set_Address - 接收2字节地址，存储为Flash绝对地址
+//   上位机发地址高字节、低字节
+//   0xFFFF为特殊标记（后续用于读版本信息）
+//   其他值: 绝对地址 = FLASH_ENTRY_POINT + (偏移量 << 1)
+//
+static void Set_Address(void)
+{
+    uint8_t  addr_high;
+    uint8_t  addr_low;
+    uint16_t offset;
+
+    addr_high = SCI_GetChar();
+    addr_low  = SCI_GetChar();
+    offset    = ((uint16_t)addr_high << 8U) | addr_low;
+
+    if(offset == 0xFFFFU)
+    {
+        g_flash_addr = 0xFFFFFFFFU;
+    }
+    else
+    {
+        g_flash_addr = FLASH_ENTRY_POINT + ((uint32_t)offset << 1U);
+    }
+
+    SCI_PutChar(ETX);
 }
 
 //
