@@ -65,6 +65,14 @@
 //
 #define COMMAND_NACK                0x01U
 #define COMMAND_HANDSHAKE           'B'
+#define COMMAND_READ_EEPROM         'F'
+#define COMMAND_LOAD_EEPROM         'E'
+#define COMMAND_READ_FLASH          'N'
+#define COMMAND_LOAD_FLASH          'M'
+#define COMMAND_SET_ADDRESS         'D'
+#define COMMAND_CHANGE_BAUD         '*'
+#define ETX                         0x03U
+#define COMMAND_ERROR               '?'
 
 #define TIMEOUT_MS                  20U
 #define SYSCLK_FREQ                 160000000U
@@ -90,36 +98,79 @@ extern void sciaFlush(void);
 //
 // Main - SCIB Bootloader
 //   GPIO18(TX) / GPIO19(RX)
-//   上位机每20ms发送一次 'B'，MCU收到后回显 'B' 进入bootloader模式
-//   超时后重新启动定时器，继续等待 'B'（调试阶段，后续改为跳转APP）
+//   上位机每20ms发送一次 'B'，MCU收到后回显 'b' 进入bootloader模式
+//   协议: 上位机发大写命令 → MCU回小写确认 → 上位机发后续数据包
+//   非法命令回复 COMMAND_ERROR ('?')
 //
 uint32_t main(void)
 {
     uint8_t command;
+    bool bootloader_active = false;
 
     Hardware_Init();
     Timer_Init();
+    Timer_Start();
 
     while(1)
     {
-        Timer_Start();
-
         command = SCI_GetChar();
+
+        if(bootloader_active == false)
+        {
+            if(command == COMMAND_HANDSHAKE)
+            {
+                SCI_PutChar('b');
+                Timer_Stop();
+                bootloader_active = true;
+            }
+            continue;
+        }
 
         switch(command)
         {
             case COMMAND_HANDSHAKE:
             {
-                SCI_PutChar(COMMAND_HANDSHAKE);
-                Timer_Stop();
-
-                while(1)
-                {
-                }
+                SCI_PutChar('b');
+                break;
+            }
+            case COMMAND_READ_EEPROM:
+            {
+                SCI_PutChar('f');
+                break;
+            }
+            case COMMAND_LOAD_EEPROM:
+            {
+                SCI_PutChar('e');
+                break;
+            }
+            case COMMAND_READ_FLASH:
+            {
+                SCI_PutChar('n');
+                break;
+            }
+            case COMMAND_LOAD_FLASH:
+            {
+                SCI_PutChar('m');
+                break;
+            }
+            case COMMAND_SET_ADDRESS:
+            {
+                SCI_PutChar('d');
+                break;
+            }
+            case COMMAND_CHANGE_BAUD:
+            {
+                SCI_PutChar('*');
+                break;
             }
             case COMMAND_NACK:
+            {
+                JumpToApp();
+                break;
+            }
             default:
             {
+                SCI_PutChar(COMMAND_ERROR);
                 break;
             }
         }
@@ -235,20 +286,20 @@ static void SCI_PutChar(uint8_t ch)
 //
 static void JumpToApp(void)
 {
-    uint32_t appEntry;
+    // uint32_t appEntry;
 
-    appEntry = *(uint32_t *)(FLASH_ENTRY_POINT + 2U);
+    // appEntry = *(uint32_t *)(FLASH_ENTRY_POINT + 2U);
 
     SCI_PutChar(0x00);
 
-    SCI_resetChannels(SCIB_BASE);
-    Timer_Stop();
+    // SCI_resetChannels(SCIB_BASE);
+    // Timer_Stop();
 
-    DINT;
-    IER = 0x0000;
-    IFR = 0x0000;
+    // DINT;
+    // IER = 0x0000;
+    // IFR = 0x0000;
 
-    ((void (*)(void))appEntry)();
+    // ((void (*)(void))appEntry)();
 }
 
 //

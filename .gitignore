@@ -1,4 +1,4 @@
-# ========== CCS C2000 编译产物（你截图里这些） ==========
+# ========== CCS C2000 ==========
 *.obj
 *.out
 *.map
@@ -9,13 +9,13 @@ CPU1_RAM/
 Debug/
 Release/
 
-# ========== CCS IDE 本地配置，不要提交 ==========
+# ========== CCS IDE ==========
 .settings/
 .theia/
 .launches/
 .xdchelp/
 config/
 
-# ========== VSCode本地配置（可选） ==========
+# ========== VSCode ==========
 .vscode/
 .DS_Store
