@@ -82,6 +82,8 @@
 #define RELEASE_DATE_LEN             8U
 #define VERSION_INFO_TOTAL          (VERSION_STR_LEN + MODULE_ID_LEN + RELEASE_DATE_LEN)
 
+#define FLASH_PAGE_SIZE             128U
+
 #define TIMEOUT_MS                  20U
 #define SYSCLK_FREQ                 160000000U
 #define TIMEOUT_PERIOD              ((SYSCLK_FREQ / 1000U) * TIMEOUT_MS)
@@ -107,6 +109,7 @@ static void SCI_PutString(const char *str, uint16_t len);
 static void JumpToApp(void);
 static void Set_Address(void);
 static void Read_Version_Info(void);
+static void Read_Flash_Page(void);
 
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
@@ -169,6 +172,10 @@ uint32_t main(void)
                 if(g_flash_addr == 0xFFFFFFFFU)
                 {
                     Read_Version_Info();
+                }
+                else
+                {
+                    Read_Flash_Page();
                 }
                 break;
             }
@@ -384,6 +391,28 @@ static void Read_Version_Info(void)
     SCI_PutString(VERSION_STR, VERSION_STR_LEN);
     SCI_PutString(MODULE_ID_STR, MODULE_ID_LEN);
     SCI_PutString(RELEASE_DATE_STR, RELEASE_DATE_LEN);
+
+    SCI_PutChar(ETX);
+}
+
+//
+// Read_Flash_Page - 从 g_flash_addr 读取 FLASH_PAGE_SIZE 字节
+//   F28E12 Flash 是内存映射的，直接指针读取即可
+//
+static void Read_Flash_Page(void)
+{
+    uint16_t i;
+    const uint8_t *data;
+
+    SCI_PutChar((uint8_t)(FLASH_PAGE_SIZE >> 8U));
+    SCI_PutChar((uint8_t)(FLASH_PAGE_SIZE & 0xFFU));
+
+    data = (const uint8_t *)g_flash_addr;
+
+    for(i = 0U; i < FLASH_PAGE_SIZE; i++)
+    {
+        SCI_PutChar(data[i]);
+    }
 
     SCI_PutChar(ETX);
 }
