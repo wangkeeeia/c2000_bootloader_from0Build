@@ -74,6 +74,14 @@
 #define ETX                         0x03U
 #define COMMAND_ERROR               '?'
 
+#define VERSION_STR                 "F28E12_BL_V1.0"
+#define MODULE_ID_STR               "F28E12X"
+#define RELEASE_DATE_STR            "20261109"
+#define VERSION_STR_LEN             14U
+#define MODULE_ID_LEN                7U
+#define RELEASE_DATE_LEN             8U
+#define VERSION_INFO_TOTAL          (VERSION_STR_LEN + MODULE_ID_LEN + RELEASE_DATE_LEN)
+
 #define TIMEOUT_MS                  20U
 #define SYSCLK_FREQ                 160000000U
 #define TIMEOUT_PERIOD              ((SYSCLK_FREQ / 1000U) * TIMEOUT_MS)
@@ -95,8 +103,10 @@ static void Timer_Stop(void);
 static bool Is_TimeOut(void);
 static uint8_t SCI_GetChar(void);
 static void SCI_PutChar(uint8_t ch);
+static void SCI_PutString(const char *str, uint16_t len);
 static void JumpToApp(void);
 static void Set_Address(void);
+static void Read_Version_Info(void);
 
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
@@ -129,6 +139,10 @@ uint32_t main(void)
                 Timer_Stop();
                 bootloader_active = true;
             }
+            else
+            {
+                Timer_Start();
+            }
             continue;
         }
 
@@ -152,6 +166,10 @@ uint32_t main(void)
             case COMMAND_READ_FLASH:
             {
                 SCI_PutChar('n');
+                if(g_flash_addr == 0xFFFFFFFFU)
+                {
+                    Read_Version_Info();
+                }
                 break;
             }
             case COMMAND_LOAD_FLASH:
@@ -247,6 +265,7 @@ static void Timer_Start(void)
 static void Timer_Stop(void)
 {
     CPUTimer_stopTimer(CPUTIMER0_BASE);
+    HWREGH(CPUTIMER0_BASE + CPUTIMER_O_TCR) |= CPUTIMER_TCR_TIF;
 }
 
 //
@@ -286,6 +305,18 @@ static uint8_t SCI_GetChar(void)
 static void SCI_PutChar(uint8_t ch)
 {
     SCI_writeCharBlockingNonFIFO(SCIB_BASE, ch);
+}
+
+//
+// SCI_PutString - 发送定长字符串（不含'\0'）
+//
+static void SCI_PutString(const char *str, uint16_t len)
+{
+    uint16_t i;
+    for(i = 0U; i < len; i++)
+    {
+        SCI_PutChar((uint8_t)str[i]);
+    }
 }
 
 //
@@ -333,6 +364,26 @@ static void Set_Address(void)
     {
         g_flash_addr = FLASH_ENTRY_POINT + ((uint32_t)offset << 1U);
     }
+
+    SCI_PutChar(ETX);
+}
+
+//
+// Read_Version_Info - 发送版本信息
+//   协议: 总长度(2B) + 版本字符串 + 模块ID + 发布日期 + ETX
+//
+static void Read_Version_Info(void)
+{
+    uint16_t total;
+
+    total = VERSION_INFO_TOTAL;
+
+    SCI_PutChar((uint8_t)(total >> 8U));
+    SCI_PutChar((uint8_t)(total & 0xFFU));
+
+    SCI_PutString(VERSION_STR, VERSION_STR_LEN);
+    SCI_PutString(MODULE_ID_STR, MODULE_ID_LEN);
+    SCI_PutString(RELEASE_DATE_STR, RELEASE_DATE_LEN);
 
     SCI_PutChar(ETX);
 }
