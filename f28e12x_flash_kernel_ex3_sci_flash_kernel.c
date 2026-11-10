@@ -98,6 +98,7 @@ static uint32_t g_flash_addr = 0xFFFFFFFFU;
 //
 void exampleError(Fapi_StatusType status);
 void Flash_initSectors(void);
+static void Clock_Init(void);
 static void Hardware_Init(void);
 static void Timer_Init(void);
 static void Timer_Start(void);
@@ -110,6 +111,7 @@ static void JumpToApp(void);
 static void Set_Address(void);
 static void Read_Version_Info(void);
 static void Read_Flash_Page(void);
+static void Load_Flash_Page(void);
 
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
@@ -181,7 +183,7 @@ uint32_t main(void)
             }
             case COMMAND_LOAD_FLASH:
             {
-                SCI_PutChar('m');
+                Load_Flash_Page();
                 break;
             }
             case COMMAND_SET_ADDRESS:
@@ -212,10 +214,129 @@ uint32_t main(void)
 }
 
 //
+// Clock_Init - 手动配置系统时钟到 160MHz，跳过 DCC 校验
+//   SysCtl_setClock() 内部会用 DCC 校验 PLL 频率，其等待 Done/Error 标志
+//   的循环没有超时保护。Flash 配置区被擦除后，DCC 永远等不到标志位，程序
+//   会永久卡死在该循环里（表现为运行到 SysCtl_setClock 后无任何反应）。
+//   这里复制 SysCtl_setClock() 的寄存器操作，但完全跳过 DCC，并用带超时的
+//   PLL lock 等待，避免死循环。
+//   时钟源: 内部振荡器 SYSOSCDIV4 (8MHz)
+//   最终:   PLLSYSCLK = 8MHz * 40 / (1 * 2 * 1) = 160MHz
+//
+static void Clock_Init(void)
+{
+    uint32_t pllMult;
+    uint32_t timeout;
+    uint16_t pllLockStatus;
+
+    //
+    // QDIV(40) | PDIV(1) | RDIVCLK0(2) 组合成 SYSPLLMULT 寄存器值
+    // 与 SysCtl_setClock() 内部的计算完全一致
+    //
+    pllMult = (uint32_t)SYSCTL_PLLMULT_40 |
+              ((uint32_t)SYSCTL_PDIV_1 << SYSCTL_SYSPLLMULT_PDIV_S) |
+              ((uint32_t)SYSCTL_RDIVCLK0_2 << SYSCTL_SYSPLLMULT_RDIVCLK0_S);
+
+    //
+    // 0. 先配置 Flash wait state（160MHz 需要 3 个 wait state）
+    //    Flash 配置区被擦除后，boot ROM 无法读取正确的 Flash 参数，
+    //    这里手动设置 FRDCNTL.RWAIT。当前系统时钟还是低速，写该寄存器安全。
+    //
+    EALLOW;
+    HWREG(FLASH0CTRL_BASE + FLASH_O_FRDCNTL) =
+        (HWREG(FLASH0CTRL_BASE + FLASH_O_FRDCNTL) &
+         ~(uint32_t)FLASH_FRDCNTL_RWAIT_M) |
+        ((uint32_t)DEVICE_FLASH_WAITSTATES << FLASH_FRDCNTL_RWAIT_S);
+    EDIS;
+
+    //
+    // 1. 旁路 PLL（PLL 输出暂时不接入系统时钟路径）
+    //
+    EALLOW;
+    HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLCTL) &= ~SYSCTL_SYSPLLCTL_PLLCLKEN;
+    EDIS;
+    SysCtl_delay(23U);
+
+    //
+    // 2. 切换到内部振荡器 SYSOSCDIV4
+    //
+    SysCtl_selectOscSource(SYSCTL_OSCSRC_SYSOSCDIV4);
+    SysCtl_delay(11U);
+
+    //
+    // 3. 系统分频先设为 /1，保证 PLL 配置阶段最快
+    //
+    SysCtl_setPLLSysClk(0U);
+
+    //
+    // 4. 关闭 PLL，准备重新配置
+    //
+    EALLOW;
+    HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLCTL) &= ~SYSCTL_SYSPLLCTL_PLLEN;
+    EDIS;
+    SysCtl_delay(12U);
+
+    //
+    // 5. 写 multiplier 并重新打开 PLL
+    //
+    EALLOW;
+    HWREG(CLKCFG_BASE + SYSCTL_O_SYSPLLMULT) = pllMult;
+    HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLCTL) |= SYSCTL_SYSPLLCTL_PLLEN;
+    EDIS;
+
+    //
+    // 6. 等待 PLL 锁定（带超时，避免死循环）
+    //    lock 时间约 1024 * OSCCLK * PDIV，8MHz 下约 128us
+    //
+    timeout = 4096U;
+    pllLockStatus = HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLSTS) &
+                    SYSCTL_SYSPLLSTS_LOCKS;
+    while((pllLockStatus != SYSCTL_SYSPLLSTS_LOCKS) && (timeout != 0U))
+    {
+        pllLockStatus = HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLSTS) &
+                        SYSCTL_SYSPLLSTS_LOCKS;
+        timeout--;
+    }
+
+    //
+    // 7. 先给一个较慢的分频（/3），限制电流上升
+    //
+    SysCtl_setPLLSysClk((uint16_t)SYSCTL_SYSDIV_1 + 2U);
+
+    //
+    // 8. 把 PLL 接入系统时钟路径
+    //
+    EALLOW;
+    HWREGH(CLKCFG_BASE + SYSCTL_O_SYSPLLCTL) |= SYSCTL_SYSPLLCTL_PLLCLKEN;
+    EDIS;
+
+    //
+    // 9. 等待电压调节器稳定
+    //
+    SysCtl_delay(40U);
+
+    //
+    // 10. 最终分频 /1 → 160MHz
+    //
+    SysCtl_setPLLSysClk((uint16_t)SYSCTL_SYSDIV_1);
+}
+
+//
 // Hardware_Init - 初始化GPIO、SCI、CPUTimer
 //
 static void Hardware_Init(void)
 {
+    //
+    // Flash 配置区被擦除后，boot ROM 无法正确初始化时钟。
+    // 这里手动配置时钟：用内部振荡器 SYSOSCDIV4 (8MHz) + PLL 到 160MHz。
+    // 不调用 Device_init()：它使用外部晶振 XTAL，而 XTAL 起振失败会
+    // 卡死在 SysCtl_selectXTAL() 的 ESTOP0 循环，导致程序跑飞。
+    //
+    SysCtl_disableWatchdog();
+    SysCtl_resetMCD();
+
+    Clock_Init();
+
     Device_initGPIO();
 
     SysCtl_setLowSpeedClock(SYSCTL_LSPCLK_PRESCALE_4);
@@ -418,11 +539,120 @@ static void Read_Flash_Page(void)
 }
 
 //
+// Load_Flash_Page - 写 Flash 数据协议（遵循 CMS32 协议）:
+//   1. 收 2 字节数据长度 + N 字节数据
+//   2. 擦除 Flash Bank
+//   3. 编程 Flash（512-bit chunk）
+//   4. 回校验回传: 'm' + 00 + 02 + checksum_high + checksum_low + ETX
+//
+static void Load_Flash_Page(void)
+{
+    uint16_t byte_count;
+    uint16_t ram_checksum = 0U;
+    uint16_t i;
+    uint16_t data_buf[FLASH_PAGE_SIZE / 2];     /* 64 words = 128 bytes = 2x 512-bit */
+    uint8_t  *byte_ptr = (uint8_t *)data_buf;
+    Fapi_StatusType status;
+    Fapi_FlashStatusType flashStatus;
+
+    /* ----- 接收数据长度 (2 bytes: high, low) ----- */
+    byte_count  = ((uint16_t)SCI_GetChar() << 8);
+    byte_count |= SCI_GetChar();
+
+    if(byte_count > FLASH_PAGE_SIZE)
+    {
+        byte_count = FLASH_PAGE_SIZE;
+    }
+
+    /* ----- 接收数据，计算 RAM 校验和 ----- */
+    for(i = 0U; i < byte_count; i++)
+    {
+        byte_ptr[i] = SCI_GetChar();
+        ram_checksum += byte_ptr[i];
+    }
+
+    /* 剩余填 0xFF */
+    for(; i < FLASH_PAGE_SIZE; i++)
+    {
+        byte_ptr[i] = 0xFFU;
+    }
+
+    /* ----- 初始化 Flash API (仅首次) ----- */
+    Flash_initSectors();
+
+    /* ----- 关闭所有扇区写保护 ----- */
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTA, 0);
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTB, 0);
+
+    /* ----- 擦除: 暂时跳过 (Flash 已为 FF 擦除态) -----
+     * 注意: 后续需改为按扇区擦除，保护 sector0 配置区，
+     *       不要用 mask=0 全片擦除，否则会破坏时钟配置区。
+     */
+
+    /* ----- 编程 Flash：128 字节分 2 次 512-bit 写入 ----- */
+    if(byte_count > 0U)
+    {
+        /* 第1块: 前 32 words (64 bytes) */
+        status = Fapi_issueAutoEcc512ProgrammingCommand(
+                    (uint32_t *)g_flash_addr,
+                    data_buf,
+                    32
+                 );
+
+        while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
+        {
+        }
+
+        flashStatus = Fapi_getFsmStatus();
+        if(status != Fapi_Status_Success || flashStatus != 3)
+        {
+            SCI_PutChar(COMMAND_ERROR);
+            return;
+        }
+
+        /* 第2块: 后 32 words (64 bytes) */
+        status = Fapi_issueAutoEcc512ProgrammingCommand(
+                    (uint32_t *)(g_flash_addr + 64U),
+                    &data_buf[32],
+                    32
+                 );
+
+        while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
+        {
+        }
+
+        flashStatus = Fapi_getFsmStatus();
+        if(status != Fapi_Status_Success || flashStatus != 3)
+        {
+            SCI_PutChar(COMMAND_ERROR);
+            return;
+        }
+    }
+
+    /* ----- 响应: 'm' + 长度(2B) + 校验和(2B) + ETX ----- */
+    SCI_PutChar('m');
+    SCI_PutChar(0);
+    SCI_PutChar(2);
+    SCI_PutChar((uint8_t)(ram_checksum >> 8));
+    SCI_PutChar((uint8_t)(ram_checksum & 0xFF));
+    SCI_PutChar(ETX);
+}
+
+//
 // Flash_initSectors - Initialize flash API and active flash bank sectors
 //
 void Flash_initSectors(void)
 {
+    static bool initialized = false;
+
+    if(initialized)
+    {
+        return;
+    }
+    initialized = true;
+
     EALLOW;
+
     Fapi_StatusType oReturnCheck;
     oReturnCheck = Fapi_initializeAPI(FlashTech_CPU0_BASE_ADDRESS, 150);
     if(oReturnCheck != Fapi_Status_Success)
