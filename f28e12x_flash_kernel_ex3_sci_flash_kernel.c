@@ -83,6 +83,11 @@
 #define VERSION_INFO_TOTAL          (VERSION_STR_LEN + MODULE_ID_LEN + RELEASE_DATE_LEN)
 
 #define FLASH_PAGE_SIZE             128U
+#define FLASH_SECTOR_SIZE           0x400U    /* 1K words = 2KB，F28E12 每个扇区 2KB */
+#define FLASH_SECTOR_MASK           0x3FFU
+#define FLASH_BASE_ADDR             0x080000U
+#define FLASH_ENTRY_POINT           0x080000U
+#define MAX_PROGRAM_RETRY           3U
 
 #define TIMEOUT_MS                  20U
 #define SYSCLK_FREQ                 160000000U
@@ -92,6 +97,12 @@
 // Flash command address (volatile: Flash words are 16‑bit aligned)
 //
 static uint32_t g_flash_addr = 0xFFFFFFFFU;
+
+//
+// Flash 数据缓冲区（放在全局 .bss，避免占用宝贵的栈空间导致栈溢出）
+//
+#pragma DATA_ALIGN(g_data_buf, 8)
+static uint16_t g_data_buf[FLASH_PAGE_SIZE / 2];   /* 64 words = 128 bytes */
 
 //
 // Function Prototypes
@@ -112,6 +123,11 @@ static void Set_Address(void);
 static void Read_Version_Info(void);
 static void Read_Flash_Page(void);
 static void Load_Flash_Page(void);
+static void Clear_FSM_Status(void);
+static void Set_Sector_Protection(uint32_t addr);
+static bool Erase_Flash_Sector(uint32_t addr);
+static bool Program_512bit(uint32_t addr, const uint16_t *data);
+static bool Program_Flash_Page(uint32_t addr, const uint16_t *data, uint16_t count);
 
 extern uint32_t sciGetFunction(uint32_t BootMode);
 extern void sciaFlush(void);
@@ -337,6 +353,13 @@ static void Hardware_Init(void)
 
     Clock_Init();
 
+    //
+    // 关键：160MHz 系统时钟下必须配置3个Flash等待周期，否则Flash读取异常
+    //
+    EALLOW;
+    Flash_initModule(FLASH0CTRL_BASE, FLASH0ECC_BASE, DEVICE_FLASH_WAITSTATES);
+    EDIS;
+
     Device_initGPIO();
 
     SysCtl_setLowSpeedClock(SYSCTL_LSPCLK_PRESCALE_4);
@@ -473,12 +496,14 @@ static void JumpToApp(void)
 //   上位机发地址高字节、低字节
 //   0xFFFF为特殊标记（后续用于读版本信息）
 //   其他值: 绝对地址 = FLASH_ENTRY_POINT + (偏移量 << 1)
+//   保护sector0(0x80000-0x807FF)，自动调整到sector1起始0x80800
 //
 static void Set_Address(void)
 {
     uint8_t  addr_high;
     uint8_t  addr_low;
     uint16_t offset;
+    uint32_t sector_start;
 
     addr_high = SCI_GetChar();
     addr_low  = SCI_GetChar();
@@ -491,6 +516,17 @@ static void Set_Address(void)
     else
     {
         g_flash_addr = FLASH_ENTRY_POINT + ((uint32_t)offset << 1U);
+
+        /* 计算目标地址所在扇区的起始地址 */
+        sector_start = FLASH_BASE_ADDR +
+                       (((g_flash_addr - FLASH_BASE_ADDR) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE);
+
+        /* sector0 (0x80000-0x803FF) 包含用户配置区，禁止任何擦除/编程操作
+           如果目标地址落入sector0，自动重定向到sector1起始地址 0x80400 */
+        if(sector_start == FLASH_BASE_ADDR)
+        {
+            g_flash_addr = FLASH_BASE_ADDR + FLASH_SECTOR_SIZE;
+        }
     }
 
     SCI_PutChar(ETX);
@@ -523,37 +559,242 @@ static void Read_Version_Info(void)
 static void Read_Flash_Page(void)
 {
     uint16_t i;
-    const uint8_t *data;
+    const uint16_t *word_ptr;
 
     SCI_PutChar((uint8_t)(FLASH_PAGE_SIZE >> 8U));
     SCI_PutChar((uint8_t)(FLASH_PAGE_SIZE & 0xFFU));
 
-    data = (const uint8_t *)g_flash_addr;
-
-    for(i = 0U; i < FLASH_PAGE_SIZE; i++)
+    /* F28E12 Flash 以 16-bit word 存储，按小端拆成字节发送:
+       byte[2k] = word[k] 低字节, byte[2k+1] = word[k] 高字节 */
+    word_ptr = (const uint16_t *)g_flash_addr;
+    for(i = 0U; i < (FLASH_PAGE_SIZE / 2U); i++)
     {
-        SCI_PutChar(data[i]);
+        SCI_PutChar((uint8_t)(word_ptr[i] & 0xFFU));
+        SCI_PutChar((uint8_t)(word_ptr[i] >> 8));
     }
 
     SCI_PutChar(ETX);
 }
 
 //
-// Load_Flash_Page - 写 Flash 数据协议（遵循 CMS32 协议）:
-//   1. 收 2 字节数据长度 + N 字节数据
-//   2. 擦除 Flash Bank
-//   3. 编程 Flash（512-bit chunk）
-//   4. 回校验回传: 'm' + 00 + 02 + checksum_high + checksum_low + ETX
+// Clear_FSM_Status - 清除 Flash FSM 状态寄存器
+//   100% 严格对齐所有官方示例 ClearFSMStatus 实现
+//   关键: 当 oFlashStatus != 0 时发起 Fapi_ClearStatus 命令
+//   注意：本函数必须在调用者的 EALLOW 块内执行，函数内部不做 EALLOW/EDIS
+//
+static void Clear_FSM_Status(void)
+{
+    Fapi_FlashStatusType oFlashStatus;
+    Fapi_StatusType oReturnCheck;
+
+    // 等待 FSM 完成前一次 Flash 操作
+    while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
+    {
+    }
+
+    oFlashStatus = Fapi_getFsmStatus();
+    // 官方所有示例统一判断：状态非零时清除
+    if(oFlashStatus != 0)
+    {
+        oReturnCheck = Fapi_issueAsyncCommand(Fapi_ClearStatus);
+        // 官方不调用 Fapi_checkFsmForReady()，直接轮询状态寄存器到0
+        while(Fapi_getFsmStatus() != 0)
+        {
+        }
+        (void)oReturnCheck;
+    }
+}
+
+//
+// Set_Sector_Protection - 根据目标地址设置扇区保护掩码
+//   掩码规则: 传给Fapi_setupBankSectorEnable的值表示"禁止操作的扇区位"
+//   最终内部取反得到"允许操作的位"
+//   - F28E12: sectors 0-31 由 CMDWEPROTA 控制 (每 bit 对应 1 个扇区)
+//   - F28E12: sectors 32-63 由 CMDWEPROTB 控制 (每 bit 对应 8 个扇区组)
+//     bit0=sectors32-39, bit1=sectors40-47, bit2=sectors48-55, bit3=sectors56-63
+//   - sector0 (0x80000-0x803FF) 保存时钟/安全配置，永远保护，禁止擦除
+//
+static void Set_Sector_Protection(uint32_t addr)
+{
+    uint32_t sector_num;
+    uint32_t sectors1 = 0U;     /* 标记: bit=1=我想擦除sector_num(0-31) */
+    uint32_t sectors2 = 0U;     /* 标记: bit=1=我想擦除sector_num_group(32+) */
+
+    sector_num = (addr - FLASH_BASE_ADDR) / FLASH_SECTOR_SIZE;
+
+    if(sector_num < 32U)
+    {
+        /* 目标扇区在 sectors 0-31 */
+        if(sector_num != 0U)
+        {
+            /* 标记: 我想擦除目标扇区 */
+            sectors1 |= (1U << sector_num);
+        }
+        else
+        {
+            /* 目标地址落入sector0，保护sector0不被擦除，
+               默认擦除sector1（0x80400-0x807FF） */
+            sectors1 |= (1U << 1U);
+        }
+    }
+    else
+    {
+        /* 目标扇区在 sectors 32-63 */
+        sectors2 |= (1U << ((sector_num - 32U) / 8U));
+    }
+
+    /* 关键！传给API前必须取反！表示：禁止操作所有我没标记要擦除的扇区。
+       注意：这里不写 EALLOW/EDIS，本函数必须在调用者的 EALLOW 块内执行。
+       若在此处 EDIS，会清掉调用者(Erase_Flash_Sector)外层的 EALLOW 保护位，
+       导致紧接着的 Fapi_issueBankEraseCommand 在无 EALLOW 状态下执行而静默失败。 */
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTA, ~sectors1);
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTB, ~sectors2);
+}
+
+//
+// Erase_Flash_Sector - 擦除指定地址所在扇区
+//   返回 true 成功，false 失败
+//   100% 对齐官方 flashapi_ex1_programming.c Example_EraseBanks 实现
+//
+static bool Erase_Flash_Sector(uint32_t addr)
+{
+    Fapi_StatusType oReturnCheck;
+    Fapi_FlashStatusType oFlashStatus;
+
+    EALLOW;
+    // 1. 调用官方标准 ClearFSMStatus()，清除前一次操作残留状态
+    Clear_FSM_Status();
+
+    // 2. 设置扇区擦除掩码（函数内部不做 EALLOW/EDIS，保持在外层块）
+    Set_Sector_Protection(addr);
+
+    // 3. 发起 Bank Erase 命令
+    oReturnCheck = Fapi_issueBankEraseCommand((uint32_t *)FLASH_BASE_ADDR);
+
+    // 4. 等待擦除完成
+    while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
+    {
+    }
+
+    oFlashStatus = Fapi_getFsmStatus();
+    EDIS;
+
+    // 5. 验证结果
+    if(oReturnCheck != Fapi_Status_Success || oFlashStatus != 3)
+    {
+        EALLOW;
+        Clear_FSM_Status();
+        EDIS;
+        return false;
+    }
+
+    return true;
+}
+
+//
+// Program_512bit - 编程单个 512-bit (64字节, 32 words) 块
+//   返回 true 成功，false 失败
+//   100% 对齐官方 f28e12x_flash_kernel_ex3_boot.c 编程流程
+//
+static bool Program_512bit(uint32_t addr, const uint16_t *data)
+{
+    Fapi_StatusType oReturnCheck;
+    Fapi_FlashStatusType oFlashStatus;
+    uint32_t retry;
+
+    for(retry = 0U; retry < MAX_PROGRAM_RETRY; retry++)
+    {
+        EALLOW;
+        // 1. 调用官方标准 ClearFSMStatus()，必须在 EALLOW 块内执行
+        Clear_FSM_Status();
+
+        // 2. 编程操作前解除所有扇区保护（与官方完全一致）
+        Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTA, 0x00000000U);
+        Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTB, 0x00000000U);
+
+        // 3. 发起 AutoEcc512 编程命令
+        //    第三个参数 u16DataBufferSizeInWords 单位为 16-bit word。
+        //    C28x 的 sizeof 以 16-bit 字为单位，官方 miniBuffer(uint16_t[32])
+        //    的 sizeof 为 32（而非 64），即 512 bit 对应 32 words。
+        oReturnCheck = Fapi_issueAutoEcc512ProgrammingCommand(
+                    (uint32_t *)addr,
+                    (uint16_t *)data,
+                    32
+                 );
+
+        // 4. 等待编程完成，官方写法 == FsmBusy
+        while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy)
+        {
+        }
+
+        oFlashStatus = Fapi_getFsmStatus();
+        EDIS;
+
+        // 5. 验证结果
+        if(oReturnCheck != Fapi_Status_Success || oFlashStatus != 3)
+        {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+//
+// Program_Flash_Page - 编程一页数据并回读校验
+//   返回 true 成功，false 失败
+//
+static bool Program_Flash_Page(uint32_t addr, const uint16_t *data, uint16_t count)
+{
+    Fapi_StatusType oReturnCheck;
+    Fapi_FlashStatusWordType oFlashStatusWord;
+    uint16_t words_done = 0U;
+
+    /* count 为实际需要编程的 16-bit word 数（1~64）。
+       Flash 最小编程单元为 512-bit(32 words)，不足部分数据已按 0xFFFF 填充，
+       因此按 32-word 步进逐块编程，避免编程全 0xFFFF 的无效块。 */
+
+    while(words_done < count)
+    {
+        if(!Program_512bit(addr + words_done, &data[words_done]))
+        {
+            return false;
+        }
+
+        /* 用官方 Fapi_doVerify 校验当前 32 words
+           官方 boot.c 里 doVerify 在整个编程流程的 EALLOW 块内执行 */
+        EALLOW;
+        oReturnCheck = Fapi_doVerify((uint32_t *)(addr + words_done), 16U,
+                                     (uint32_t *)&data[words_done], &oFlashStatusWord);
+        EDIS;
+        if(oReturnCheck != Fapi_Status_Success)
+        {
+            return false;
+        }
+
+        words_done += 32U;
+    }
+
+    return true;
+}
+
+//
+// Load_Flash_Page - 写 Flash 数据协议（严格遵循 CMS32 协议）:
+//   - 上位机发 'M' → MCU回 'm' → 上位机发 2字节长度 + N字节数据
+//   - 长度 = 0 表示仅擦除当前页，校验和返回 0xFE00
+//   - 长度 > 0 表示编程数据，校验和返回接收到数据的字节累加和
+//   - 响应格式: 'm' + 0x00 + 0x02 + checksum_H + checksum_L + ETX
 //
 static void Load_Flash_Page(void)
 {
     uint16_t byte_count;
     uint16_t ram_checksum = 0U;
     uint16_t i;
-    uint16_t data_buf[FLASH_PAGE_SIZE / 2];     /* 64 words = 128 bytes = 2x 512-bit */
-    uint8_t  *byte_ptr = (uint8_t *)data_buf;
-    Fapi_StatusType status;
-    Fapi_FlashStatusType flashStatus;
+    uint8_t  rx_byte;
+    bool blank_check;
+    const uint16_t *flash_word_ptr;
 
     /* ----- 接收数据长度 (2 bytes: high, low) ----- */
     byte_count  = ((uint16_t)SCI_GetChar() << 8);
@@ -564,72 +805,90 @@ static void Load_Flash_Page(void)
         byte_count = FLASH_PAGE_SIZE;
     }
 
-    /* ----- 接收数据，计算 RAM 校验和 ----- */
-    for(i = 0U; i < byte_count; i++)
+    /* ----- 缓冲区先填 0xFFFF（未收到的部分保持 Flash 擦除态） ----- */
+    for(i = 0U; i < (FLASH_PAGE_SIZE / 2U); i++)
     {
-        byte_ptr[i] = SCI_GetChar();
-        ram_checksum += byte_ptr[i];
+        g_data_buf[i] = 0xFFFFU;
     }
 
-    /* 剩余填 0xFF */
-    for(; i < FLASH_PAGE_SIZE; i++)
+    /* ----- 接收数据并打包成 16-bit word ----- */
+    /* F28E12 Flash 以 16-bit word 为最小单元，上位机按字节顺序发送，
+       小端打包: word[k] = byte[2k] | (byte[2k+1] << 8) */
+    for(i = 0U; i < byte_count; i++)
     {
-        byte_ptr[i] = 0xFFU;
+        rx_byte = SCI_GetChar();
+        ram_checksum += rx_byte;
+
+        if((i & 1U) == 0U)
+        {
+            /* 低字节，保留高字节(仍为 0xFF) */
+            g_data_buf[i >> 1] = (g_data_buf[i >> 1] & 0xFF00U) | (uint16_t)rx_byte;
+        }
+        else
+        {
+            /* 高字节，保留低字节 */
+            g_data_buf[i >> 1] = (g_data_buf[i >> 1] & 0x00FFU) | ((uint16_t)rx_byte << 8);
+        }
     }
 
     /* ----- 初始化 Flash API (仅首次) ----- */
     Flash_initSectors();
 
-    /* ----- 关闭所有扇区写保护 ----- */
-    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTA, 0);
-    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTB, 0);
-
-    /* ----- 擦除: 暂时跳过 (Flash 已为 FF 擦除态) -----
-     * 注意: 后续需改为按扇区擦除，保护 sector0 配置区，
-     *       不要用 mask=0 全片擦除，否则会破坏时钟配置区。
-     */
-
-    /* ----- 编程 Flash：128 字节分 2 次 512-bit 写入 ----- */
-    if(byte_count > 0U)
+    /* ----- 长度 = 0: 仅擦除对应页 ----- */
+    if(byte_count == 0U)
     {
-        /* 第1块: 前 32 words (64 bytes) */
-        status = Fapi_issueAutoEcc512ProgrammingCommand(
-                    (uint32_t *)g_flash_addr,
-                    data_buf,
-                    32
-                 );
-
-        while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
-        {
-        }
-
-        flashStatus = Fapi_getFsmStatus();
-        if(status != Fapi_Status_Success || flashStatus != 3)
+        if(!Erase_Flash_Sector(g_flash_addr))
         {
             SCI_PutChar(COMMAND_ERROR);
             return;
         }
-
-        /* 第2块: 后 32 words (64 bytes) */
-        status = Fapi_issueAutoEcc512ProgrammingCommand(
-                    (uint32_t *)(g_flash_addr + 64U),
-                    &data_buf[32],
-                    32
-                 );
-
-        while(Fapi_checkFsmForReady() != Fapi_Status_FsmReady)
+        ram_checksum = 0xFE00U;
+    }
+    else
+    {
+        /* ----- 先检查目标区域是否已全为 0xFFFF（已擦除） ----- */
+        blank_check = true;
+        flash_word_ptr = (const uint16_t *)g_flash_addr;
+        for(i = 0U; i < (FLASH_PAGE_SIZE / 2U); i++)
         {
+            if(flash_word_ptr[i] != 0xFFFFU)
+            {
+                blank_check = false;
+                break;
+            }
         }
 
-        flashStatus = Fapi_getFsmStatus();
-        if(status != Fapi_Status_Success || flashStatus != 3)
+        /* ----- 非空白区域才执行扇区擦除 ----- */
+        if(!blank_check)
         {
-            SCI_PutChar(COMMAND_ERROR);
-            return;
+            if(!Erase_Flash_Sector(g_flash_addr))
+            {
+                SCI_PutChar(COMMAND_ERROR);
+                return;
+            }
+        }
+
+        /* ----- 编程数据并校验 -----
+           实际有效 16-bit word 数 = ceil(byte_count / 2)，
+           只编程有效数据块，避免对全 0xFFFF 的无效块发起编程 */
+        {
+            uint16_t word_count = (byte_count + 1U) / 2U;
+
+            if(!Program_Flash_Page(g_flash_addr, g_data_buf, word_count))
+            {
+                SCI_PutChar(COMMAND_ERROR);
+                return;
+            }
         }
     }
 
-    /* ----- 响应: 'm' + 长度(2B) + 校验和(2B) + ETX ----- */
+    /* ----- 恢复所有扇区保护（防止意外擦除） ----- */
+    EALLOW;
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTA, 0xFFFFFFFFU);
+    Fapi_setupBankSectorEnable(FLASH_WRAPPER_PROGRAM_BASE + FLASH_O_CMDWEPROTB, 0xFFFFFFFFU);
+    EDIS;
+
+    /* ----- 响应: 'm' + 00 + 02 + checksum_high + checksum_low + ETX ----- */
     SCI_PutChar('m');
     SCI_PutChar(0);
     SCI_PutChar(2);
@@ -654,7 +913,9 @@ void Flash_initSectors(void)
     EALLOW;
 
     Fapi_StatusType oReturnCheck;
-    oReturnCheck = Fapi_initializeAPI(FlashTech_CPU0_BASE_ADDRESS, 150);
+    // 第二个参数必须与实际系统时钟频率一致（Clock_Init 配置为 160MHz），
+    // 与官方 flashapi_ex1 的 DEVICE_SYSCLK_FREQ/1000000U 语义一致。
+    oReturnCheck = Fapi_initializeAPI(FlashTech_CPU0_BASE_ADDRESS, 160);
     if(oReturnCheck != Fapi_Status_Success)
     {
         exampleError(oReturnCheck);
@@ -668,8 +929,16 @@ void Flash_initSectors(void)
 //
 #ifdef __TI_COMPILER_VERSION__
     #if __TI_COMPILER_VERSION__ >= 15009000
+        #pragma CODE_SECTION(Clear_FSM_Status, ".TI.ramfunc");
+        #pragma CODE_SECTION(Set_Sector_Protection, ".TI.ramfunc");
+        #pragma CODE_SECTION(Erase_Flash_Sector, ".TI.ramfunc");
+        #pragma CODE_SECTION(Program_512bit, ".TI.ramfunc");
         #pragma CODE_SECTION(exampleError,".TI.ramfunc");
     #else
+        #pragma CODE_SECTION(Clear_FSM_Status, "ramfuncs");
+        #pragma CODE_SECTION(Set_Sector_Protection, "ramfuncs");
+        #pragma CODE_SECTION(Erase_Flash_Sector, "ramfuncs");
+        #pragma CODE_SECTION(Program_512bit, "ramfuncs");
         #pragma CODE_SECTION(exampleError,"ramfuncs");
     #endif
 #endif

@@ -19,18 +19,18 @@ MEMORY
 SECTIONS
 {
    codestart        : > BEGIN
-   .text            : >> RAMM1 | RAMGS0
+   .text            : > RAMGS0
    .cinit           : > RAMM0
    .switch          : > RAMM0
    .reset           : > RESET, TYPE = DSECT /* not used, */
 
    .stack           : > RAMM1
 #if defined(__TI_EABI__)
-   .bss             : >> RAMGS0 | RAMM1
-   .bss:output      : >> RAMGS0 | RAMM1
+   .bss             : > RAMGS0
+   .bss:output      : > RAMGS0
    .init_array      : > RAMM0
-   .const           : >> RAMM1 | RAMGS0 | RAMM0
-   .data            : >> RAMGS0 | RAMM1
+   .const           : >> RAMGS0 | RAMM0
+   .data            : > RAMGS0
    .sysmem          : > RAMGS0
 #else
    .pinit           : > RAMM0

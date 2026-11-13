@@ -99,8 +99,8 @@ wd_disable:
     MOVZ DP, #7029h>>6  ;Set data page for WDCR register
     MOV @7029h, #0068h  ;Set WDDIS bit in WDCR to disable WD
     EDIS                ;Disable EALLOW protected register access
-    ;LB _c_int00         ;Branch to start of boot._asm in RTS library
-    LCR main
+    LB _c_int00         ;调试器加载: 走完整C环境初始化(设置SP/清零bss/初始化data)
+    ;LCR main           ;Boot ROM加载场景才用: 跳过_c_int00, 复用Boot ROM的栈
 
 ; Cleanup and exit.  At this point the EntryAddr
 ; is located in the ACC register
